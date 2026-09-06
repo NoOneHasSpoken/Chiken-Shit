@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.26;
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {Addr} from "./Shared.sol";
+import "./DividendTracker.sol";
+
+contract UERC20 is ERC20 {
+    uint256 public immutable FIXED_SUPPLY;
+    address public immutable deployer;
+
+    DividendTracker public tracker;
+    bool private _configured;
+
+    event Configured(address indexed tracker);
+
+    error OnlyDeployer();
+    error AlreadyConfigured();
+    error ZeroTracker();
+
+    modifier onlyDeployer() {
+        if (msg.sender != deployer) revert OnlyDeployer();
+        _;
+    }
+
+    constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {
+        deployer = msg.sender;
+        FIXED_SUPPLY = 1_000_000_000 * 10 ** 18;
+        _mint(msg.sender, FIXED_SUPPLY);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 18;
+    }
+
+    function configure(address tracker_) external onlyDeployer {
+        if (_configured) revert AlreadyConfigured();
+        if (tracker_ == address(0)) revert ZeroTracker();
+        _configured = true;
+
+        tracker = DividendTracker(payable(tracker_));
+
+        emit Configured(tracker_);
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        super._update(from, to, value);
+        if (from != address(0)) _syncDividend(from);
+        if (to != address(0)) _syncDividend(to);
+    }
+
+    function _syncDividend(address account) internal {
+        DividendTracker t = tracker;
+        if (address(t) == address(0)) return;
+        if (
+            account == address(this)
+            || account == address(t)
+            || account == Addr.DEAD
+            || account == Addr.DEFAULT_BURN
+            || account == Addr.V3_NFT_POS_MGR
+            || account == Addr.V3_SWAP_ROUTER_02
+            || account == Addr.V3_FACTORY
+            || _isV3Pool(account)
+        ) return;
+        t.setBalance(account, balanceOf(account));
+    }
+
+    function _isV3Pool(address account) internal view returns (bool) {
+        (bool ok, bytes memory data) = account.staticcall(
+            abi.encodeWithSelector(0x0dfe1681)
+        );
+        if (!ok || data.length < 32) return false;
+        address t0 = abi.decode(data, (address));
+        return t0 == address(this) || t0 == Addr.WETH;
+    }
+}
